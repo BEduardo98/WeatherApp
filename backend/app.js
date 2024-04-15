@@ -1,14 +1,21 @@
 const express = require("express");
 const app = express();
-const port = 3000;
-
-app.listen(port, () => {
-  console.log(`Server is running at http://localhost:${port}`);
-});
-
-const apiRoutes = require("./routes/apiRoutes");
+const weatherRoutes = require("./routes/weatherRoutes");
 const userRoutes = require("./routes/userRoutes");
+const errorHandlingMiddleware = require("../backend/middleware/errorHnandlingMiddleware");
 
-// Montage routes
-app.use("/api", apiRoutes);
-app.use("/user", userRoutes);
+app.use(express.json());
+
+app.use("/users", userRoutes);
+app.use("/weather", weatherRoutes);
+
+app.use(errorHandlingMiddleware);
+
+if (process.env.NODE_ENV !== "test") {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}
+
+module.exports = app;

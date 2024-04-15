@@ -1,103 +1,90 @@
-const mysql = require("mysql");
-const connection = require("../database");
+const jwt = require("jsonwebtoken");
+const bcrypt = require("bcrypt");
+const db = require("../database");
+const { check, validationResult } = require("express-validator");
+const Utilisateur = require("../models/Utilisateur");
 
-exports.registerUser = (req, res) => {
-  const { name, email } = req.body;
-  connection.query("INSERT INTO utilisateur (nom,email) VALUES (?,?)", [name, email], (error, results) => {
-    if (error) {
-      console.error("Erreur lors de l'enregistrement d'un nouvel utilisateur :", error);
-      return res.status(500).json({ error: "Erreur lors de l'enregistrement d'un nouvel utilisateur." });
+exports.registerUser = [
+  check("email").isEmail().withMessage("Enter a valid email address"),
+  check("password").isLength({ min: 6 }).withMessage("Password must be at least 6 characters long"),
+  async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
     }
-    res.status(200).json({ message: "Nouvel utilisateur enregistré avec succès." });
-  });
-};
 
-exports.loginUser = (req, res) => {
-  const { email } = req.body;
-  connection.query("SELECT * FROM utilisateur WHERE email = ?", [email], (error, results) => {
-    if (error) {
-      console.error("Erreur lors de la connexion de l'utilisateur :", error);
-      return res.status(500).json({ error: "Erreur lors de la connexion de l'utilisateur." });
-    }
-    if (results.length === 0) {
-      return res.status(404).json({ error: "Utilisateur non trouvé." });
-    }
-    res.status(200).json({ user: results[0] });
-  });
-};
-
-exports.getUserNotifications = (req, res) => {
-  const userId = req.params.userId;
-  connection.query("SELECT * FROM notification WHERE utilisateurId = ?", [userId], (error, results) => {
-    if (error) {
-      console.error("Erreur lors de la récupération des notifications utilisateur :", error);
-      return res.status(500).json({ error: "Erreur lors de la récupération des notifications utilisateur." });
-    }
-    res.status(200).json({ notifications: results });
-  });
-};
-
-exports.getUserInfo = (req, res) => {
-  const userId = req.params.userId;
-  connection.query("SELECT * FROM utilisateur WHERE id = ?", [userId], (error, results) => {
-    if (error) {
-      console.error("Erreur lors de la récupération des informations utilisateur :", error);
-      return res.status(500).json({ error: "Erreur lors de la récupération des informations utilisateur." });
-    }
-    if (results.length === 0) {
-      return res.status(404).json({ error: "Utilisateur non trouvé." });
-    }
-    res.status(200).json({ user: results[0] });
-  });
-};
-
-exports.getUserPreferences = (req, res) => {
-  const userId = req.params.userId;
-  connection.query("SELECT * FROM préférences WHERE utilisateurId = ?", [userId], (error, results) => {
-    if (error) {
-      console.error("Erreur lors de la récupération des préférences utilisateur :", error);
-      return res.status(500).json({ error: "Erreur lors de la récupération des préférences utilisateur." });
-    }
-    if (results.length === 0) {
-      return res.status(404).json({ error: "Préférences utilisateur non trouvées." });
-    }
-    res.status(200).json({ preferences: results[0] });
-  });
-};
-
-exports.toggleNotifications = (req, res) => {
-  const { userId } = req.params;
-  const { notificationsEnabled } = req.body;
-  connection.query("UPDATE utilisateur SET notifications = ? WHERE id = ?", [notificationsEnabled, userId], (error, results) => {
-    if (error) {
-      console.error("Erreur lors de l'activation/désactivation des notifications :", error);
-      return res.status(500).json({ error: "Erreur lors de l'activation/désactivation des notifications." });
-    }
-    res.status(200).json({ message: "Notifications utilisateur mises à jour avec succès." });
-  });
-};
-
-exports.updateUserPreferences = (req, res) => {
-  const { userId, newLocationPreference, newUnitPreference, newNotificationPreference } = req.body;
-  connection.query(
-    "CALL UpdateUserPreferences(?, ?, ?, ?)",
-    [userId, newLocationPreference, newUnitPreference, newNotificationPreference],
-    (error, results) => {
-      if (error) {
-        console.error("Erreur lors de la mise à jour des préférences utilisateur :", error);
-        return res.status(500).json({ error: "Erreur lors de la mise à jour des préférences utilisateur." });
+    const { email, password } = req.body;
+    try {
+      const hashedPassword = await bcrypt.hash(password, 12);
+      const [result] = await db.query("INSERT INTO utilisateur (email, mot_de_passe) VALUES (?, ?)", [email, hashedPassword]);
+      res.status(201).json({ message: "User registered" });
+    } catch (error) {
+      if (error.code === "ER_DUP_ENTRY") {
+        return res.status(409).json({ message: "Email already exists" });
       }
-      res.status(200).json({ message: "Préférences utilisateur mises à jour avec succès." });
+      next(error);
     }
-  );
+  },
+];
+
+exports.loginUser = async (req, res, next) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ message: "Email and password are required" });
+  }
+  const result = await db.query("SELECT * FROM utilisateur WHERE email = ?", [email]);
+  if (result === undefined) {
+    console.error("Database query returned undefined");
+  } else if (Array.isArray(result)) {
+    const [users] = result;
+    try {
+      if (users.length === 0) {
+        return res.status(401).json({ message: "Authentication failed" });
+      }
+
+      const user = new Utilisateur(users[0].id, users[0].nom, users[0].email, users[0].mot_de_passe);
+
+      const isValid = await bcrypt.compare(password, user.mot_de_passe);
+      if (!isValid) {
+        console.error("Failed login attempt for user:", email);
+        return res.status(401).json({ message: "Authentication failed" });
+      }
+
+      const token = jwt.sign({ userId: user.id, email: user.email }, process.env.JWT_SECRET, { expiresIn: "1h" });
+      res.status(200).json({ token: token, userId: user.id });
+    } catch (error) {
+      console.error("Login error:", error);
+      next(error);
+    }
+  } else {
+    console.error("Database query did not return an array:", result);
+  }
 };
 
-exports.getUserSearchHistory = (req, res) => {
-  const userId = req.params.userId;
-  db.query("SELECT * FROM historiquerecherche WHERE utilisateurId = ? ORDER BY dateEtHeure DESC", [userId], (error, results) => {
-    if (error) {
-      return res.status(500).json({ error });
-    }
-    res.json(results);
-  });
+exports.updateUserPreferences = async (req, res, next) => {
+  const { userId } = req.params;
+  const { localisationPréférée, unitéDeMesure, notifications } = req.body;
+  if (!localisationPréférée || !unitéDeMesure) {
+    return res.status(400).json({ message: "Localisation and unité de mesure are required" });
+  }
+
+  try {
+    const preferences = { localisationPréférée, unitéDeMesure, notifications };
+    const result = await db.query("CALL UpdateUserPreferences(?, ?)", [userId, JSON.stringify(preferences)]);
+    res.status(200).json({ message: "Preferences updated successfully." });
+  } catch (error) {
+    console.error("Error updating user preferences:", error);
+    next(error);
+  }
+};
+
+exports.deleteUser = async (req, res, next) => {
+  const { userId } = req.params;
+
+  try {
+    await db.query("DELETE FROM utilisateur WHERE id = ?", [userId]);
+    res.status(200).json({ message: "User deleted successfully." });
+  } catch (error) {
+    next(error);
+  }
 };
